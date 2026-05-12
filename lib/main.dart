@@ -156,7 +156,7 @@ class _NotificationHomePageState extends State<NotificationHomePage> {
             Text(_status, style: Theme.of(context).textTheme.bodyMedium),
             const SizedBox(height: 16),
             Text(
-              'Saved notifications',
+              'Saved notifications.',
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
