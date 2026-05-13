@@ -1,15 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:notification_sync_kit/notification_sync_kit.dart';
 
-import 'src/models/notification_record.dart';
-import 'src/services/notification_config.dart';
-import 'src/services/notification_listener_controller.dart';
-import 'src/services/notification_queue_store.dart';
-import 'src/services/notification_sync_manager.dart';
-import 'src/services/notification_uploader.dart';
-import 'src/ui/notification_detail_page.dart';
-import 'src/ui/settings_page.dart';
+// ─── YOUR CONFIG ────────────────────────────────────────────────────────────
+// Replace these two values before running.
+const String _kEndpoint = 'https://your-api.example.com/notifications';
+const String _kBearerToken = 'YOUR_BEARER_TOKEN_HERE';
+// ────────────────────────────────────────────────────────────────────────────
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,7 +37,6 @@ class NotificationHomePage extends StatefulWidget {
 }
 
 class _NotificationHomePageState extends State<NotificationHomePage> {
-  late final NotificationConfig _config;
   late final NotificationQueueStore _queueStore;
   late final NotificationListenerController _listenerController;
   late final NotificationUploader _uploader;
@@ -58,16 +55,12 @@ class _NotificationHomePageState extends State<NotificationHomePage> {
   }
 
   Future<void> _bootstrap() async {
-    // Load persisted config (URL + token).
-    _config = NotificationConfig();
-    await _config.init();
-
     _queueStore = NotificationQueueStore();
     await _queueStore.init();
 
     _uploader = NotificationUploader(
-      endpoint: _config.endpoint,
-      bearerToken: _config.token,
+      endpoint: _kEndpoint,
+      bearerToken: _kBearerToken,
     );
 
     _syncManager = NotificationSyncManager(
@@ -80,60 +73,35 @@ class _NotificationHomePageState extends State<NotificationHomePage> {
     );
 
     _listenerController = NotificationListenerController();
+
     final storedNotifications = await _queueStore.readAll();
     _listenerSub = _listenerController.events.listen(_handleIncomingEvent);
     await _listenerController.startIfGranted();
 
     final accessGranted = await _listenerController.isAccessGranted();
+
     if (!mounted) return;
     setState(() {
       _recent = storedNotifications;
       _accessGranted = accessGranted;
       _isLoading = false;
-      _status = _config.isConfigured
-          ? (accessGranted
-                ? 'Listening — uploads instantly, retries every 30 s.'
-                : 'Notification access is not granted.')
-          : 'Tap ⚙ to configure your server endpoint and token.';
+      _status = accessGranted
+          ? 'Listening — will upload instantly, queue retries every 30 s.'
+          : 'Notification access is not granted.';
     });
   }
 
-  /// Called by [SettingsPage] after the user saves new values. Applies the
-  /// updated endpoint and token to the running uploader without restarting.
-  void _onSettingsSaved() {
-    _uploader.setEndpoint(_config.endpoint);
-    _uploader.setBearerToken(_config.token);
-    setState(() {
-      _status = _config.isConfigured
-          ? 'Settings updated — uploads active.'
-          : 'Tap ⚙ to configure your server endpoint and token.';
-    });
-  }
-
-  void _openSettings() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) =>
-            SettingsPage(config: _config, onSaved: _onSettingsSaved),
-      ),
-    );
-  }
-
-  /// Tries an instant upload. Falls back to local queue on failure.
+  /// Try to upload immediately. If it fails, save to the local queue so the
+  /// [NotificationSyncManager] can retry it on the next 30-second tick.
   Future<void> _handleIncomingEvent(NotificationRecord record) async {
-    String statusMsg;
+    final uploaded = await _uploader.upload(record);
 
-    if (!_config.isConfigured) {
-      await _queueStore.add(record);
-      statusMsg = '⚙ No server configured — ${record.packageName} queued.';
+    String statusMsg;
+    if (uploaded) {
+      statusMsg = '✓ Uploaded ${record.packageName} to server';
     } else {
-      final uploaded = await _uploader.upload(record);
-      if (uploaded) {
-        statusMsg = '✓ Uploaded ${record.packageName} to server';
-      } else {
-        await _queueStore.add(record);
-        statusMsg = '⚠ Upload failed — ${record.packageName} queued for retry';
-      }
+      await _queueStore.add(record);
+      statusMsg = '⚠ Upload failed — ${record.packageName} queued for retry';
     }
 
     final storedNotifications = await _queueStore.readAll();
@@ -180,59 +148,12 @@ class _NotificationHomePageState extends State<NotificationHomePage> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Notification Capture'),
-        actions: [
-          IconButton(
-            icon: Icon(
-              Icons.settings,
-              color: _config.isConfigured ? null : Colors.orange,
-            ),
-            tooltip: 'Server settings',
-            onPressed: _openSettings,
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Notification Capture')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Config status banner
-            if (!_config.isConfigured)
-              Container(
-                width: double.infinity,
-                margin: const EdgeInsets.only(bottom: 12),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.orange.shade50,
-                  border: Border.all(color: Colors.orange.shade200),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.warning_amber_rounded,
-                      color: Colors.orange.shade700,
-                      size: 18,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Server not configured — tap ⚙ to add your endpoint and token.',
-                        style: TextStyle(
-                          color: Colors.orange.shade900,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
             Text(
               _accessGranted ? 'Access: Granted' : 'Access: Not Granted',
               style: Theme.of(context).textTheme.titleMedium,

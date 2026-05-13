@@ -1,0 +1,16 @@
+name: notification_sync_kit_example
+description: Example app demonstrating notification_sync_kit.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  notification_sync_kit:
+    path: ../
+
+flutter:
+  uses-material-design: true

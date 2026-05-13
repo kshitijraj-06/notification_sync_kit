@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:notification_test/src/models/notification_record.dart';
+import 'package:notification_sync_kit/notification_sync_kit.dart';
 
 void main() {
   test('NotificationRecord list serialization round-trip', () {
