@@ -2,7 +2,9 @@ name: notification_sync_kit
 description: >-
   Capture Android notifications, persist them to a local queue, and sync them
   to your server via HTTP with Bearer token auth and automatic retry.
-version: 0.1.0
+  Enriches each notification with GPS speed, location, and driver interaction
+  type (OPENED, DISMISSED, REPLIED, IGNORED) for driver behaviour analysis.
+version: 0.2.0
 homepage: https://github.com/kshitijranjan/notification_sync_kit
 repository: https://github.com/kshitijranjan/notification_sync_kit
 issue_tracker: https://github.com/kshitijranjan/notification_sync_kit/issues
@@ -13,6 +15,8 @@ topics:
   - background-service
   - http
   - sync
+  - gps
+  - driver-behaviour
 
 environment:
   sdk: ^3.10.4
@@ -20,7 +24,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  geolocator: ^13.0.0
   http: ^1.2.2
+  logging: ^1.2.0
   notification_listener_service: ^0.3.5
   shared_preferences: ^2.3.2
 

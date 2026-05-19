@@ -38,6 +38,7 @@ class NotificationHomePage extends StatefulWidget {
 
 class _NotificationHomePageState extends State<NotificationHomePage> {
   late final NotificationQueueStore _queueStore;
+  late final InteractionDetector _interactionDetector;
   late final NotificationListenerController _listenerController;
   late final NotificationUploader _uploader;
   late final NotificationSyncManager _syncManager;
@@ -58,6 +59,12 @@ class _NotificationHomePageState extends State<NotificationHomePage> {
     _queueStore = NotificationQueueStore();
     await _queueStore.init();
 
+    // Set up interaction detection (requires Usage Access permission).
+    _interactionDetector = InteractionDetector();
+    if (!await _interactionDetector.hasPermission()) {
+      await _interactionDetector.requestPermission();
+    }
+
     _uploader = NotificationUploader(
       endpoint: _kEndpoint,
       bearerToken: _kBearerToken,
@@ -72,7 +79,9 @@ class _NotificationHomePageState extends State<NotificationHomePage> {
       },
     );
 
-    _listenerController = NotificationListenerController();
+    _listenerController = NotificationListenerController(
+      interactionDetector: _interactionDetector,
+    );
 
     final storedNotifications = await _queueStore.readAll();
     _listenerSub = _listenerController.events.listen(_handleIncomingEvent);

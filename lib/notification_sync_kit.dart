@@ -1,20 +1,32 @@
 /// A Flutter package for capturing Android notifications, persisting them
 /// to a local queue, and syncing them to your server via HTTP.
 ///
+/// Each notification is enriched with GPS speed, coordinates, and driver
+/// interaction type (OPENED / DISMISSED / REPLIED / IGNORED) before upload.
+///
 /// ## Quick start
 ///
 /// ```dart
 /// import 'package:notification_sync_kit/notification_sync_kit.dart';
 ///
+/// // 1. Request Usage Access so interaction type can be detected.
+/// final detector = InteractionDetector();
+/// if (!await detector.hasPermission()) {
+///   await detector.requestPermission();
+/// }
+///
+/// // 2. Wire up the uploader and queue.
 /// final uploader = NotificationUploader(
 ///   endpoint: 'https://api.example.com/notifications',
 ///   bearerToken: 'your-token',
 /// );
-///
 /// final store = NotificationQueueStore();
 /// await store.init();
 ///
-/// final controller = NotificationListenerController();
+/// // 3. Start listening — records are emitted once notifications are resolved.
+/// final controller = NotificationListenerController(
+///   interactionDetector: detector,
+/// );
 /// controller.events.listen((record) async {
 ///   final ok = await uploader.upload(record);
 ///   if (!ok) await store.add(record); // queue for retry
@@ -23,7 +35,9 @@
 /// ```
 library notification_sync_kit;
 
+export 'src/logging.dart';
 export 'src/models/notification_record.dart';
+export 'src/services/interaction_detector.dart';
 export 'src/services/notification_config.dart';
 export 'src/services/notification_listener_controller.dart';
 export 'src/services/notification_queue_store.dart';

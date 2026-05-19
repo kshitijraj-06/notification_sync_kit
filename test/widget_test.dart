@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-
 import 'package:notification_sync_kit/notification_sync_kit.dart';
 
 void main() {
@@ -11,7 +10,11 @@ void main() {
       text: 'World',
       timestampMillis: 123,
       hasRemoved: false,
-      raw: const <String, dynamic>{'k': 'v'},
+      canReply: true,
+      haveExtraPicture: false,
+      speedKmph: 55.0,
+      interactionType: InteractionType.dismissed,
+      interactionDelayMs: 800,
     );
     final encoded = NotificationRecord.encodeList([original]);
     final decoded = NotificationRecord.decodeList(encoded);
@@ -19,5 +22,9 @@ void main() {
     expect(decoded.length, 1);
     expect(decoded.first.id, 'abc');
     expect(decoded.first.packageName, 'com.example.app');
+    expect(decoded.first.canReply, true);
+    expect(decoded.first.speedKmph, 55.0);
+    expect(decoded.first.interactionType, InteractionType.dismissed);
+    expect(decoded.first.interactionDelayMs, 800);
   });
 }

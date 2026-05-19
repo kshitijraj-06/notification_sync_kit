@@ -1,6 +1,6 @@
 # notification_sync_kit
 
-A Flutter package for **Android** that captures system notifications, persists them to a local queue, and syncs them to your server via HTTP — with Bearer token auth and automatic retry.
+A Flutter package for **Android** that captures system notifications, enriches them with GPS speed, location, and driver interaction type, then persists and syncs them to your server via HTTP.
 
 [![pub.dev](https://img.shields.io/pub/v/notification_sync_kit.svg)](https://pub.dev/packages/notification_sync_kit)
 [![Platform](https://img.shields.io/badge/platform-android-green.svg)](https://pub.dev/packages/notification_sync_kit)
@@ -10,9 +10,11 @@ A Flutter package for **Android** that captures system notifications, persists t
 
 ## Features
 
-- 🔔 **Listen** to all Android notifications via `NotificationListenerService`
+- 🔔 **Listen** to Android notifications via `NotificationListenerService`
+- 📍 **GPS enrichment** — speed (km/h), latitude, longitude captured at notification arrival
+- 🧠 **Interaction detection** — classifies each notification as `OPENED`, `DISMISSED`, `REPLIED`, or `IGNORED` using Android's `UsageStatsManager`
 - 💾 **Queue** notifications locally in `SharedPreferences` (survives app restarts)
-- 📡 **Upload** each notification as JSON to your HTTP endpoint with a Bearer token
+- 📡 **Upload** each notification as JSON to your HTTP endpoint with Bearer token auth
 - 🔄 **Retry** — failed uploads stay in the queue and are retried every 30 seconds
 - ⚙️ **Configurable** endpoint and token at runtime — no rebuild needed
 - 🧩 **Single import** — one barrel file exposes everything
@@ -25,45 +27,115 @@ A Flutter package for **Android** that captures system notifications, persists t
 |---------|-----|-----|
 | ✅ | ❌ | ❌ |
 
-This package depends on [`notification_listener_service`](https://pub.dev/packages/notification_listener_service), which is Android-only.
-
 ---
 
 ## Installation
 
-Add to your `pubspec.yaml`:
-
 ```yaml
 dependencies:
-  notification_sync_kit: ^0.1.0
+  notification_sync_kit: ^0.2.0
 ```
-
-Then run:
 
 ```sh
 flutter pub get
 ```
 
-### Android setup
+---
 
-In `AndroidManifest.xml`, add the notification listener permission inside `<manifest>`:
+## Android setup
+
+### 1. AndroidManifest.xml
+
+Add inside `<manifest>`:
 
 ```xml
-<uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" />
+<uses-permission android:name="android.permission.INTERNET" />
+
+<!-- For GPS enrichment -->
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+<!-- For interaction detection (OPENED / REPLIED / DISMISSED / IGNORED) -->
+<uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+    tools:ignore="ProtectedPermissions" />
 ```
 
-And inside `<application>`:
+Add inside `<application>`:
 
 ```xml
 <service
-    android:name="com.amorenew.notificationlistener.NotificationListener"
-    android:label="@string/app_name"
+    android:name="notification.listener.service.NotificationListener"
+    android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
     android:exported="true"
-    android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+    android:label="notifications">
     <intent-filter>
         <action android:name="android.service.notification.NotificationListenerService" />
     </intent-filter>
 </service>
+```
+
+### 2. MainActivity.kt
+
+Add a `MethodChannel` for `UsageStatsManager` in your `MainActivity`. The channel name must match `InteractionDetector.defaultChannelName` (`"notification_sync_kit/usage_stats"`):
+
+```kotlin
+import android.app.AppOpsManager
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
+import android.content.Context
+import android.content.Intent
+import android.os.Process
+import android.provider.Settings
+import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+
+class MainActivity : FlutterActivity() {
+    companion object {
+        private const val CHANNEL = "notification_sync_kit/usage_stats"
+    }
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "hasUsageStatsPermission" -> result.success(hasUsageStatsPermission())
+                    "requestUsageStatsPermission" -> {
+                        startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                        result.success(null)
+                    }
+                    "wasAppOpenedRecently" -> {
+                        val pkg = call.argument<String>("packageName") ?: ""
+                        val ms = (call.argument<Int>("withinMs") ?: 3000).toLong()
+                        result.success(wasAppOpenedRecently(pkg, ms))
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    private fun hasUsageStatsPermission(): Boolean {
+        val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        return appOps.checkOpNoThrow(
+            AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName
+        ) == AppOpsManager.MODE_ALLOWED
+    }
+
+    private fun wasAppOpenedRecently(packageName: String, withinMs: Long): Boolean {
+        if (!hasUsageStatsPermission()) return false
+        val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+        val now = System.currentTimeMillis()
+        val events = usm.queryEvents(now - withinMs, now)
+        val event = UsageEvents.Event()
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            if (event.packageName == packageName &&
+                event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) return true
+        }
+        return false
+    }
+}
 ```
 
 ---
@@ -73,93 +145,136 @@ And inside `<application>`:
 ```dart
 import 'package:notification_sync_kit/notification_sync_kit.dart';
 
-// 1. Set up the local queue
+// 1. Request Usage Access for interaction detection
+final detector = InteractionDetector();
+if (!await detector.hasPermission()) {
+  await detector.requestPermission(); // opens Android Settings
+}
+
+// 2. Set up the local queue
 final store = NotificationQueueStore();
 await store.init();
 
-// 2. Set up the uploader (Bearer token auth)
+// 3. Set up the uploader
 final uploader = NotificationUploader(
   endpoint: 'https://api.example.com/notifications',
   bearerToken: 'your-secret-token',
 );
 
-// 3. Listen for notifications
-final controller = NotificationListenerController();
+// 4. Start listening — records are emitted once each notification is resolved
+final controller = NotificationListenerController(
+  interactionDetector: detector,
+);
 controller.events.listen((NotificationRecord record) async {
-  // Try instant upload — fall back to queue on failure
   final ok = await uploader.upload(record);
-  if (!ok) await store.add(record);
+  if (!ok) await store.add(record); // queue for retry
 });
 await controller.startIfGranted();
 
-// 4. Retry queued records every 30 seconds
+// 5. Retry queued records every 30 seconds
 final syncManager = NotificationSyncManager(
   queueStore: store,
   uploader: uploader,
-  onSyncResult: (remaining, message) async {
-    print(message); // e.g. "All 3 queued record(s) synced."
-  },
+  onSyncResult: (remaining, message) async => print(message),
 );
 ```
 
-Don't forget to `dispose()` everything when done:
+Don't forget to `dispose()` when done:
 
 ```dart
 controller.dispose();
-syncManager.dispose(); // also disposes the uploader
+syncManager.dispose();
 ```
 
 ---
 
-## Persisting config across restarts
+## Logging
 
-Use `NotificationConfig` to save the endpoint and token in `SharedPreferences` so they survive app restarts:
+The package uses the standard [`logging`](https://pub.dev/packages/logging) package with a hierarchical logger per component. Logging is **silent by default** — call the setup helper once at startup to enable it:
 
 ```dart
-final config = NotificationConfig();
-await config.init();
+import 'package:notification_sync_kit/notification_sync_kit.dart';
 
-// Save
-await config.setEndpoint('https://api.example.com/notifications');
-await config.setToken('your-secret-token');
+// Verbose — all operations (good for development)
+setupNotificationSyncKitLogging(level: Level.ALL);
 
-// Read back
-print(config.endpoint); // https://api.example.com/notifications
-print(config.isConfigured); // true
+// Warnings only — failures and soft errors (good for production)
+setupNotificationSyncKitLogging(level: Level.WARNING);
+
+// With timestamps
+setupNotificationSyncKitLogging(level: Level.ALL, includeTimestamp: true);
+
+// Silence completely
+setupNotificationSyncKitLogging(level: Level.OFF);
 ```
 
-Update the uploader at runtime without restarting:
+You can also target individual components:
 
 ```dart
-uploader.setEndpoint(config.endpoint);
-uploader.setBearerToken(config.token);
+Logger('notification_sync_kit.uploader').level = Level.WARNING;
+Logger('notification_sync_kit.detector').level = Level.OFF;
+```
+
+### Logger hierarchy
+
+| Logger | Component |
+|---|---|
+| `notification_sync_kit` | Root — covers all sub-loggers |
+| `notification_sync_kit.controller` | NotificationListenerController |
+| `notification_sync_kit.detector` | InteractionDetector |
+| `notification_sync_kit.uploader` | NotificationUploader |
+| `notification_sync_kit.sync` | NotificationSyncManager |
+| `notification_sync_kit.store` | NotificationQueueStore |
+
+### Sample output (`Level.ALL`)
+
+```
+FINE notification_sync_kit.controller: Notification access granted — starting listener.
+FINE notification_sync_kit.controller: Notification posted: com.whatsapp|42 — sampling GPS.
+FINE notification_sync_kit.controller: GPS sampled for com.whatsapp|42: 58.3 km/h @ (28.6139, 77.2090).
+FINE notification_sync_kit.controller: Notification removed: com.whatsapp|42 — resolving.
+FINE notification_sync_kit.detector: Detecting interaction for com.whatsapp (delay: 4.2 s, canReply: true).
+FINE notification_sync_kit.detector: UsageStats query for com.whatsapp (within 3000ms): false.
+FINE notification_sync_kit.detector: com.whatsapp → DISMISSED.
+FINE notification_sync_kit.controller: Resolved com.whatsapp|42 → DISMISSED in 4.2 s.
+FINE notification_sync_kit.uploader: Uploading com.whatsapp|42|1747612800000 to https://api.example.com/notifications.
+FINE notification_sync_kit.uploader: Upload succeeded for com.whatsapp|42|1747612800000 (HTTP 200).
+WARNING notification_sync_kit.uploader: Upload failed for com.whatsapp|43|... (HTTP 503). Will retry.
+FINE notification_sync_kit.store: Queued com.whatsapp|43|... (queue size: 1).
+FINE notification_sync_kit.sync: Sync tick: flushing 1 record(s).
+FINE notification_sync_kit.sync: All 1 queued record(s) synced.
 ```
 
 ---
 
-## NotificationRecord payload
-
-Every notification is serialized to JSON with this shape:
+## NotificationRecord JSON payload
 
 ```json
 {
-  "id": "com.whatsapp|123|1700000000000",
+  "id": "com.whatsapp|42|1747612800000",
   "packageName": "com.whatsapp",
   "title": "Alice",
   "text": "Hey, are you free?",
-  "timestampMillis": 1700000000000,
-  "hasRemoved": false,
-  "raw": {
-    "id": 123,
-    "packageName": "com.whatsapp",
-    "title": "Alice",
-    "content": "Hey, are you free?",
-    "canReply": true,
-    "hasRemoved": false,
-    "haveExtraPicture": false
-  }
+  "timestampMillis": 1747612800000,
+  "hasRemoved": true,
+  "canReply": true,
+  "haveExtraPicture": false,
+  "speedKmph": 58.3,
+  "latitude": 28.613945,
+  "longitude": 77.209006,
+  "interactionType": "DISMISSED",
+  "interactionDelayMs": 4200
 }
 ```
+
+### Interaction types
+
+| Value | Meaning |
+|---|---|
+| `OPENED` | Driver tapped the notification — detected via `UsageStatsManager` |
+| `DISMISSED` | Driver swiped it away |
+| `REPLIED` | Inline reply (heuristic: `canReply=true`, removed quickly, app not opened) |
+| `IGNORED` | Notification sat unread for > 5 minutes |
 
 ---
 
@@ -168,15 +283,15 @@ Every notification is serialized to JSON with this shape:
 | Class | Purpose |
 |---|---|
 | `NotificationRecord` | Immutable notification snapshot with JSON serialization |
-| `NotificationListenerController` | Wraps the Android listener, exposes a `Stream<NotificationRecord>` |
-| `NotificationQueueStore` | `SharedPreferences`-backed persistent queue (add, readAll, removeByIds) |
-| `NotificationUploader` | HTTP POST with Bearer token auth and graceful error handling |
-| `NotificationSyncManager` | Periodic flush of queued records with automatic retry |
+| `InteractionType` | Enum: `ignored`, `dismissed`, `opened`, `replied` |
+| `InteractionDetector` | Classifies driver interaction using `UsageStatsManager` |
+| `NotificationListenerController` | Wraps the Android listener, exposes `Stream<NotificationRecord>` |
+| `NotificationQueueStore` | `SharedPreferences`-backed persistent queue |
+| `NotificationUploader` | HTTP POST with Bearer token auth |
+| `NotificationSyncManager` | Periodic flush of queued records with retry |
 | `NotificationConfig` | Persists endpoint + token across app restarts |
-| `NotificationDetailPage` | Optional Flutter widget to display a record's full JSON |
-| `SettingsPage` | Optional Flutter UI for the user to enter endpoint + token |
-
-Full API docs: [pub.dev/documentation/notification_sync_kit](https://pub.dev/documentation/notification_sync_kit/latest/)
+| `NotificationDetailPage` | Flutter widget to display a record's full detail |
+| `SettingsPage` | Flutter UI for entering endpoint + token |
 
 ---
 

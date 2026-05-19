@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'src/models/notification_record.dart';
+import 'src/services/interaction_detector.dart';
 import 'src/services/notification_config.dart';
 import 'src/services/notification_listener_controller.dart';
 import 'src/services/notification_queue_store.dart';
@@ -41,6 +42,7 @@ class NotificationHomePage extends StatefulWidget {
 class _NotificationHomePageState extends State<NotificationHomePage> {
   late final NotificationConfig _config;
   late final NotificationQueueStore _queueStore;
+  late final InteractionDetector _interactionDetector;
   late final NotificationListenerController _listenerController;
   late final NotificationUploader _uploader;
   late final NotificationSyncManager _syncManager;
@@ -79,7 +81,15 @@ class _NotificationHomePageState extends State<NotificationHomePage> {
       },
     );
 
-    _listenerController = NotificationListenerController();
+    // Set up interaction detection (requires Usage Access permission).
+    _interactionDetector = InteractionDetector();
+    if (!await _interactionDetector.hasPermission()) {
+      await _interactionDetector.requestPermission();
+    }
+
+    _listenerController = NotificationListenerController(
+      interactionDetector: _interactionDetector,
+    );
     final storedNotifications = await _queueStore.readAll();
     _listenerSub = _listenerController.events.listen(_handleIncomingEvent);
     await _listenerController.startIfGranted();

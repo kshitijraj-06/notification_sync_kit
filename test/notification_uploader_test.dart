@@ -4,14 +4,15 @@ import 'package:http/testing.dart';
 import 'package:notification_sync_kit/notification_sync_kit.dart';
 
 NotificationRecord _record() => NotificationRecord(
-  id: 'com.test|1|0',
-  packageName: 'com.test',
-  title: 'Test',
-  text: 'Body',
-  timestampMillis: 0,
-  hasRemoved: false,
-  raw: {},
-);
+      id: 'com.test|1|0',
+      packageName: 'com.test',
+      title: 'Test',
+      text: 'Body',
+      timestampMillis: 0,
+      hasRemoved: false,
+      canReply: false,
+      haveExtraPicture: false,
+    );
 
 void main() {
   group('NotificationUploader', () {
@@ -97,5 +98,20 @@ void main() {
         uploader.dispose();
       },
     );
+
+    test('sends correct JSON body', () async {
+      http.Request? captured;
+      final uploader = NotificationUploader(
+        endpoint: 'https://test.example.com/notifications',
+        httpClient: MockClient((req) async {
+          captured = req;
+          return http.Response('ok', 200);
+        }),
+      );
+      await uploader.upload(_record());
+      expect(captured?.body, contains('"packageName":"com.test"'));
+      expect(captured?.body, contains('"interactionType"'));
+      uploader.dispose();
+    });
   });
 }

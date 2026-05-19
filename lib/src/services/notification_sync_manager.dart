@@ -1,7 +1,11 @@
 import 'dart:async';
 
+import 'package:logging/logging.dart';
+
 import 'notification_queue_store.dart';
 import 'notification_uploader.dart';
+
+final _log = Logger('notification_sync_kit.sync');
 
 /// Periodically flushes queued [NotificationRecord]s to the server.
 ///
@@ -9,26 +13,7 @@ import 'notification_uploader.dart';
 /// attempts to upload each one via [NotificationUploader], and removes
 /// successfully uploaded records from [NotificationQueueStore]. Records that
 /// fail to upload stay in the queue and are retried on the next tick.
-///
-/// ```dart
-/// final syncManager = NotificationSyncManager(
-///   queueStore: store,
-///   uploader: uploader,
-///   onSyncResult: (remaining, message) async {
-///     print(message); // e.g. "All 3 queued record(s) synced."
-///   },
-/// );
-/// // ... later:
-/// syncManager.dispose();
-/// ```
 class NotificationSyncManager {
-  /// Creates a [NotificationSyncManager] and starts the periodic timer.
-  ///
-  /// - [queueStore] — the local persistent queue to flush.
-  /// - [uploader] — responsible for sending each record to the server.
-  /// - [onSyncResult] — called after every flush with the number of records
-  ///   still pending and a human-readable status message.
-  /// - [interval] — how often to attempt a flush. Defaults to 30 seconds.
   NotificationSyncManager({
     required NotificationQueueStore queueStore,
     required NotificationUploader uploader,
@@ -37,6 +22,7 @@ class NotificationSyncManager {
   }) : _queueStore = queueStore,
        _uploader = uploader,
        _onSyncResult = onSyncResult {
+    _log.fine('SyncManager started (interval: ${interval.inSeconds} s).');
     _timer = Timer.periodic(interval, (_) {
       unawaited(flushPending());
     });
@@ -51,14 +37,21 @@ class NotificationSyncManager {
   /// Uploads all queued records to the server right now.
   ///
   /// Re-entrant calls while a flush is already in progress are silently
-  /// ignored. Successfully uploaded records are removed from the queue;
-  /// failed ones remain for the next retry.
+  /// ignored.
   Future<void> flushPending() async {
-    if (_isSyncing) return;
+    if (_isSyncing) {
+      _log.fine('Sync already in progress — skipping tick.');
+      return;
+    }
     _isSyncing = true;
     try {
       final pending = await _queueStore.readAll();
-      if (pending.isEmpty) return;
+      if (pending.isEmpty) {
+        _log.fine('Sync tick: queue is empty, nothing to upload.');
+        return;
+      }
+
+      _log.fine('Sync tick: flushing ${pending.length} record(s).');
 
       final uploaded = <String>[];
       for (final record in pending) {
@@ -77,6 +70,12 @@ class NotificationSyncManager {
           ? 'All ${uploaded.length} queued record(s) synced.'
           : 'Synced ${uploaded.length}, $remaining still pending.';
 
+      if (remaining > 0) {
+        _log.warning(message);
+      } else {
+        _log.fine(message);
+      }
+
       await _onSyncResult(remaining, message);
     } finally {
       _isSyncing = false;
@@ -84,8 +83,8 @@ class NotificationSyncManager {
   }
 
   /// Cancels the periodic timer and disposes the [NotificationUploader].
-  /// Always call this when the manager is no longer needed.
   void dispose() {
+    _log.fine('Disposing NotificationSyncManager.');
     _timer?.cancel();
     _uploader.dispose();
   }
